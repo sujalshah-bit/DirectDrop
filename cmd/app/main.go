@@ -5,15 +5,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/sujalshah-bit/DirectDrop/internal/config"
 	"github.com/sujalshah-bit/DirectDrop/internal/p2p"
 	"github.com/sujalshah-bit/DirectDrop/pkg"
-)
-
-const (
-	SERVERADDR = 0
-	CODE       = 1
-	ACTION     = 2
-	PATH       = 3
 )
 
 func main() {
@@ -23,30 +17,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	action := *flags[ACTION]
+	action := *flags[config.ACTION]
 	if action == "share" {
-		server := p2p.NewTCPServer("192.168.29.239:8081", *flags[SERVERADDR], 5*time.Second)
+		server := p2p.NewSharerTCPServer(config.PEER_SERVER_ADDRESS, *flags[config.SERVER_ADDRESS], config.TIMEOUT*time.Second, flags)
+		if err := server.Start(); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
 		err := server.SendCodeToServer()
 		if err != nil {
 			log.Printf("Failed to send code: %v", err)
 		}
 		defer server.Stop()
+		// Block main so server keeps running
+		select {}
 	} else {
-		receiever := p2p.NewTCPClient(*flags[SERVERADDR], 5*time.Second)
+		receiever := p2p.NewTCPClient(*flags[config.SERVER_ADDRESS], config.TIMEOUT*time.Second)
 		err := receiever.Connect()
 		if err != nil {
 			log.Printf("Receiver failed to connect to server: %v", err)
 			os.Exit(1)
 		}
 		defer receiever.Close()
-		str, err := receiever.ReceiveCode(*flags[CODE])
+		sharerIP, err := receiever.ReceiveCode(*flags[config.CODE])
 		if err != nil {
 			log.Printf("Receiver failed to receiver info from server: %v", err)
 			os.Exit(1)
 
 		}
 
-		log.Printf("Value received: %v", str)
+		log.Printf("Value received: %v", sharerIP)
+		receiever.RequestData(sharerIP)
+
 	}
 
 }

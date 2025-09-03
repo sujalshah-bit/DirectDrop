@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sujalshah-bit/DirectDrop/pkg"
 )
 
 type PeerInfo struct {
@@ -29,7 +31,9 @@ func main() {
 
 	defer listener.Close()
 
-	log.Println("server started on :8080")
+	address := pkg.GetDeviceIPWithPort("8080")
+	message := fmt.Sprintf("TCP server started on %s\n", address)
+	log.Println(message)
 
 	peers := &Peers{
 		peers: make(map[string]PeerInfo),
