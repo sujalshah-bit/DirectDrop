@@ -19,7 +19,8 @@ func main() {
 
 	action := *flags[config.ACTION]
 	if action == "share" {
-		server := p2p.NewSharerTCPServer(config.PEER_SERVER_ADDRESS, *flags[config.SERVER_ADDRESS], config.TIMEOUT*time.Second, flags)
+		serverAddress := pkg.GetDeviceIPWithPort("8081")
+		server := p2p.NewSharerTCPServer(serverAddress, *flags[config.SERVER_ADDRESS], config.TIMEOUT*time.Second, flags)
 		if err := server.Start(); err != nil {
 			log.Fatalf("Failed to start server: %v", err)
 		}

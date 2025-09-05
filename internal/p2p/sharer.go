@@ -2,11 +2,6 @@ package p2p
 
 import (
 	"bufio"
-	"bytes"
-	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -96,8 +91,6 @@ func (s *SharerTCPServer) acceptConnections() {
 
 	}
 }
-
-// handleClient handles communication with a single client
 func (s *SharerTCPServer) handleClient(conn net.Conn) {
 	defer func() {
 		conn.Close()
@@ -110,70 +103,121 @@ func (s *SharerTCPServer) handleClient(conn net.Conn) {
 	clientAddr := conn.RemoteAddr().String()
 	log.Printf("Client connected: %s\n", clientAddr)
 
-	err := s.shareFile(conn)
+	if err := s.shareObject(conn); err != nil {
+		log.Printf("Error handling client %s: %v", clientAddr, err)
+	}
+}
+
+func (s *SharerTCPServer) shareObject(conn net.Conn) error {
+	path := *s.flags[config.PATH]
+	ok, err := pkg.IsDir(path)
 	if err != nil {
-		log.Printf("Error sharing file %v", err)
+		return fmt.Errorf("failed to check path type: %w", err)
 	}
 
+	if ok {
+		meta := config.Meta{Type: "dir"}
+		if err := pkg.SendMetadata(conn, meta); err != nil {
+			return err
+		}
+		if err := pkg.WaitAck(conn); err != nil {
+			return fmt.Errorf("receiver did not ack root dir: %w", err)
+		}
+		return s.shareFolder(conn)
+	}
+
+	meta := config.Meta{Type: "file"}
+	if err := pkg.SendMetadata(conn, meta); err != nil {
+		return err
+	}
+	if err := pkg.WaitAck(conn); err != nil {
+		return fmt.Errorf("receiver did not ack root file: %w", err)
+	}
+	return s.shareFile(conn)
 }
 
 func (s *SharerTCPServer) shareFile(conn net.Conn) error {
-	if conn == nil {
-		return fmt.Errorf("not connected to server")
-	}
-
 	path := *s.flags[config.PATH]
-
 	data, err := os.ReadFile(path)
 	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", path, err)
+	}
+
+	compressed, checksum, err := pkg.CompressData(data)
+	if err != nil {
+		return fmt.Errorf("failed to compress file %s: %w", path, err)
+	}
+
+	meta := config.Meta{
+		Filename: filepath.Base(path),
+		Type:     "file",
+		Size:     len(compressed),
+		Checksum: checksum,
+	}
+	if err := pkg.SendMetadata(conn, meta); err != nil {
 		return err
 	}
-	log.Printf("Read file: %s (%d bytes)", path, len(data))
-
-	// compress
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(data); err != nil {
-		return err
-	}
-	gz.Close()
-	compressed := buf.Bytes()
-	log.Printf("Compressed data size: %d bytes", len(compressed))
-
-	// checksum on compressed data
-	sum := sha256.Sum256(compressed)
-	checksum := hex.EncodeToString(sum[:])
-	log.Printf("Checksum computed: %s", checksum)
-
-	// send metadata (JSON)
-	meta := map[string]interface{}{
-		"filename": filepath.Base(path), // only send base name
-		"size":     len(compressed),
-		"checksum": checksum,
-	}
-	metaBytes, _ := json.Marshal(meta)
-	if _, err := conn.Write(append(metaBytes, '\n')); err != nil {
-		return err
-	}
-	log.Printf("Sent metadata: %s", string(metaBytes))
-
-	// wait for ack from receiver
-	ack := make([]byte, 3)
-	if _, err := conn.Read(ack); err != nil {
-		return err
-	}
-	log.Printf("Received ack: %s", string(ack))
-
-	if string(ack) != "OK\n" {
-		return fmt.Errorf("receiver rejected metadata")
+	if err := pkg.WaitAck(conn); err != nil {
+		return fmt.Errorf("receiver rejected file %s: %w", path, err)
 	}
 
-	// send compressed data
-	_, err = conn.Write(compressed)
-	if err == nil {
-		log.Printf("Sent compressed file content (%d bytes)", len(compressed))
+	if _, err := conn.Write(compressed); err != nil {
+		return fmt.Errorf("failed to send file %s: %w", path, err)
 	}
-	return err
+	log.Printf("Sent file %s (%d bytes)", path, len(compressed))
+	return nil
+}
+
+func (s *SharerTCPServer) shareFolder(conn net.Conn) error {
+	basePath := *s.flags[config.PATH]
+
+	return filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(basePath, path)
+
+		if info.IsDir() {
+			meta := config.Meta{Path: relPath, Type: "dir"}
+			if err := pkg.SendMetadata(conn, meta); err != nil {
+				return err
+			}
+			if err := pkg.WaitAck(conn); err != nil {
+				return fmt.Errorf("receiver rejected dir %s: %w", relPath, err)
+			}
+			log.Printf("Sent dir: %s", relPath)
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read file %s: %w", relPath, err)
+		}
+
+		compressed, checksum, err := pkg.CompressData(data)
+		if err != nil {
+			return fmt.Errorf("failed to compress %s: %w", relPath, err)
+		}
+
+		meta := config.Meta{
+			Path:     relPath,
+			Type:     "file",
+			Size:     len(compressed),
+			Checksum: checksum,
+		}
+		if err := pkg.SendMetadata(conn, meta); err != nil {
+			return err
+		}
+		if err := pkg.WaitAck(conn); err != nil {
+			return fmt.Errorf("receiver rejected file %s: %w", relPath, err)
+		}
+
+		if _, err := conn.Write(compressed); err != nil {
+			return fmt.Errorf("failed to send file %s: %w", relPath, err)
+		}
+		log.Printf("Sent file: %s (%d bytes)", relPath, len(compressed))
+		return nil
+	})
 }
 
 // ==================== CLIENT FUNCTIONALITY TO OTHER SERVERS ====================
@@ -186,9 +230,11 @@ func (s *SharerTCPServer) SendCodeToServer() error {
 	}
 	defer conn.Close()
 
+	addr := pkg.GetDeviceIPWithPort("8081")
+
 	code := pkg.GenerateRandomString(10)
 
-	_, err = fmt.Fprintf(conn, "ADD %s\n", code)
+	_, err = fmt.Fprintf(conn, "ADD %s %s\n", code, addr)
 	if err != nil {
 		return fmt.Errorf("failed to send code to server %s: %w", s.Addr, err)
 	}

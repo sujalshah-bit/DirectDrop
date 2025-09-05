@@ -60,7 +60,7 @@ func handleClient(conn net.Conn, peers *Peers) {
 	for scanner.Scan() {
 		rawText := scanner.Text()
 		text := strings.Trim(rawText, " ")
-		parts := strings.SplitN(text, " ", 3)
+		parts := strings.SplitN(text, " ", 4)
 
 		if len(parts) < 2 {
 			fmt.Fprintln(conn, "ERROR Invalid command format")
@@ -72,18 +72,19 @@ func handleClient(conn net.Conn, peers *Peers) {
 
 		switch command {
 		case "ADD":
+			sharerServerAddr := parts[2]
 			peers.mu.Lock()
-			peers.peers[shareCode] = PeerInfo{Address: clientIP, LastSeen: time.Now()}
+			peers.peers[shareCode] = PeerInfo{Address: sharerServerAddr, LastSeen: time.Now()}
 			peers.mu.Unlock()
 			fmt.Fprintf(conn, "OK Registered code %s\n", shareCode)
-			log.Printf("Registered code: %s for %s", shareCode, clientIP)
+			log.Printf("Registered code: %s for %s", shareCode, sharerServerAddr)
 		case "LOOK":
 			peers.mu.RLock()
 			peer, exist := peers.peers[shareCode]
 			if !exist {
 				fmt.Fprint(conn, "Peer did not exist\n")
 			} else {
-				fmt.Fprintf(conn, "%s found\n", peer.Address)
+				fmt.Fprintf(conn, "%s\n", peer.Address)
 				log.Printf("Lookup for code %s: found %s", shareCode, peer.Address)
 
 			}
